@@ -313,7 +313,7 @@ with st.sidebar:
         st.rerun()
 
 # Display chat messages
-for message in st.session_state.messages:
+for msg_idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
@@ -404,12 +404,12 @@ for message in st.session_state.messages:
                         options=[1, 2, 3, 4, 5],
                         format_func=lambda x: "⭐" * x,
                         horizontal=True,
-                        key=f"feedback_score_{len(st.session_state.messages)}",
+                        key=f"feedback_score_msg_{msg_idx}",
                         label_visibility="collapsed"
                     )
                 
                 with col2:
-                    if st.button("👍 Enviar", key=f"submit_feedback_{len(st.session_state.messages)}", type="secondary"):
+                    if st.button("👍 Enviar", key=f"submit_feedback_msg_{msg_idx}", type="secondary"):
                         result = send_feedback(
                             question=message["content"],
                             sql_query=message["data"]["sql_query"],
