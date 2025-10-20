@@ -1,8 +1,6 @@
 import streamlit as st
 import requests
 import json
-import plotly.graph_objects as go
-from plotly.utils import PlotlyJSONEncoder
 import pandas as pd
 from datetime import datetime
 
@@ -13,233 +11,17 @@ st.set_page_config(
     layout="wide"
 )
 
-# Función para preprocesar los datos de visualización
-def preprocess_chart_data(viz_data):
-    """
-    Preprocesa los datos de visualización del webhook para generar gráficos correctos.
-    
-    Args:
-        viz_data: Diccionario con los datos de visualización del webhook
-        
-    Returns:
-        Diccionario con la estructura corregida para Plotly
-    """
-    try:
-        if not viz_data or not viz_data.get("success"):
-            return None
-            
-        chart_json = viz_data.get("chart_json")
-        if not chart_json:
-            return None
-            
-        # Parsear el JSON
-        if isinstance(chart_json, str):
-            chart_dict = json.loads(chart_json)
-        else:
-            chart_dict = chart_json
-            
-        # Verificar si los datos necesitan preprocesamiento
-        if "data" in chart_dict and len(chart_dict["data"]) > 0:
-            first_trace = chart_dict["data"][0]
-            
-            # Detectar si los datos X son objetos complejos (problema principal)
-            if "x" in first_trace and len(first_trace["x"]) > 0:
-                first_x = first_trace["x"][0]
-                
-                # Si X contiene objetos complejos, necesitamos preprocesarlos
-                if isinstance(first_x, dict) and any(key in first_x for key in ["zone", "city", "country"]):
-                    return preprocess_complex_data(chart_dict)
-        
-        return chart_dict
-        
-    except Exception as e:
-        st.error(f"Error en preprocesamiento: {str(e)}")
-        return None
 
 
-def preprocess_complex_data(chart_dict):
-    """
-    Preprocesa datos complejos donde X e Y son objetos JSON.
-    
-    Args:
-        chart_dict: Diccionario original del gráfico
-        
-    Returns:
-        Diccionario con datos corregidos
-    """
-    try:
-        original_data = chart_dict["data"][0]
-        raw_x_data = original_data.get("x", [])
-        
-        # Extraer datos de los objetos complejos
-        zones = []
-        lead_penetration = []
-        perfect_order = []
-        countries = []
-        cities = []
-        
-        for item in raw_x_data:
-            if isinstance(item, dict):
-                # Crear etiqueta descriptiva
-                zone_label = f"{item.get('zone', 'N/A')}"
-                city = item.get('city', '')
-                country = item.get('country', '')
-                
-                if city:
-                    zone_label += f", {city}"
-                    
-                zones.append(zone_label)
-                countries.append(country)
-                cities.append(city)
-                
-                # Extraer valores numéricos
-                lead_val = float(item.get('lead_penetration_value', 0))
-                perfect_val = float(item.get('perfect_order_value', 0)) * 100
-                
-                lead_penetration.append(lead_val)
-                perfect_order.append(perfect_val)
-        
-        # Determinar tipo de gráfico basado en los datos
-        chart_type = original_data.get("type", "bar")
-        
-        # Crear nueva estructura de datos
-        new_data = []
-        
-        if chart_type == "bar":
-            # Gráfico de barras agrupadas para comparar ambas métricas
-            new_data = [
-                {
-                    "x": zones,
-                    "y": lead_penetration,
-                    "type": "bar",
-                    "name": "Lead Penetration (%)",
-                    "marker": {"color": "#FF6B35", "opacity": 0.8},
-                    "text": [f"{v:.1f}%" for v in lead_penetration],
-                    "textposition": "auto",
-                    "hovertemplate": "<b>%{x}</b><br>Lead Penetration: %{y:.1f}%<extra></extra>"
-                },
-                {
-                    "x": zones,
-                    "y": perfect_order,
-                    "type": "bar",
-                    "name": "Perfect Order (%)",
-                    "marker": {"color": "#4CAF50", "opacity": 0.8},
-                    "text": [f"{v:.1f}%" for v in perfect_order],
-                    "textposition": "auto",
-                    "hovertemplate": "<b>%{x}</b><br>Perfect Order: %{y:.1f}%<extra></extra>"
-                }
-            ]
-        
-        # Actualizar layout
-        new_layout = chart_dict.get("layout", {})
-        new_layout.update({
-            "xaxis": {
-                "title": "Zona",
-                "tickangle": -45,
-                "gridcolor": "#E0E0E0"
-            },
-            "yaxis": {
-                "title": "Porcentaje (%)",
-                "gridcolor": "#E0E0E0"
-            },
-            "barmode": "group",
-            "paper_bgcolor": "#FAFAFA",
-            "plot_bgcolor": "white",
-            "margin": {"t": 80, "r": 30, "l": 60, "b": 140},
-            "font": {"family": "Arial, sans-serif"},
-            "showlegend": True,
-            "height": 500,
-            "hovermode": "x unified"
-        })
-        
-        # Mantener el título original si existe
-        if "title" in chart_dict.get("layout", {}):
-            new_layout["title"] = chart_dict["layout"]["title"]
-            if isinstance(new_layout["title"], dict):
-                new_layout["title"]["text"] = "Lead Penetration vs Perfect Order por Zona"
-        
-        return {
-            "data": new_data,
-            "layout": new_layout,
-            "config": chart_dict.get("config", {
-                "responsive": True,
-                "displayModeBar": True,
-                "displaylogo": False
-            })
-        }
-        
-    except Exception as e:
-        st.error(f"Error procesando datos complejos: {str(e)}")
-        return chart_dict
-
-
-def extract_data_table_from_chart(viz_data):
-    """
-    Extrae una tabla de datos del JSON de visualización.
-    
-    Args:
-        viz_data: Diccionario con los datos de visualización
-        
-    Returns:
-        DataFrame con los datos extraídos o None
-    """
-    try:
-        chart_json = viz_data.get("chart_json")
-        if not chart_json:
-            return None
-            
-        if isinstance(chart_json, str):
-            chart_dict = json.loads(chart_json)
-        else:
-            chart_dict = chart_json
-            
-        if "data" in chart_dict and len(chart_dict["data"]) > 0:
-            first_trace = chart_dict["data"][0]
-            
-            if "x" in first_trace and len(first_trace["x"]) > 0:
-                first_x = first_trace["x"][0]
-                
-                # Si X contiene objetos complejos, extraer tabla
-                if isinstance(first_x, dict):
-                    raw_data = first_trace["x"]
-                    df = pd.DataFrame(raw_data)
-                    
-                    # Renombrar columnas para mejor legibilidad
-                    column_rename = {
-                        "country": "País",
-                        "city": "Ciudad", 
-                        "zone": "Zona",
-                        "lead_penetration_value": "Lead Penetration",
-                        "perfect_order_value": "Perfect Order"
-                    }
-                    df = df.rename(columns=column_rename)
-                    
-                    # Convertir valores a numéricos y formatear
-                    if "Lead Penetration" in df.columns:
-                        df["Lead Penetration"] = pd.to_numeric(df["Lead Penetration"], errors='coerce')
-                        df["Lead Penetration (%)"] = df["Lead Penetration"].round(1)
-                        
-                    if "Perfect Order" in df.columns:
-                        df["Perfect Order"] = pd.to_numeric(df["Perfect Order"], errors='coerce')
-                        df["Perfect Order (%)"] = (df["Perfect Order"] * 100).round(1)
-                        
-                    return df
-                    
-        return None
-        
-    except Exception as e:
-        return None
-
-
-def send_feedback(question, sql_query, feedback_score, user_id, results):
+def send_feedback(feedback_text, user_id, question, sql_query, results):
     """
     Envía feedback al webhook de N8N.
     
     Args:
-        question: La pregunta original
-        sql_query: La consulta SQL
-        feedback_score: Score de 1-5
+        feedback_text: Texto del feedback (positivo/negativo)
         user_id: ID del usuario
+        question: Pregunta original
+        sql_query: Query SQL ejecutada
         results: Resultados de la consulta
         
     Returns:
@@ -247,17 +29,17 @@ def send_feedback(question, sql_query, feedback_score, user_id, results):
     """
     try:
         payload = {
+            "feedback": feedback_text,
+            "user_id": user_id,
             "question": question,
             "sql_query": sql_query,
-            "feedback_score": feedback_score,
-            "user_id": user_id,
-            "execution_time": datetime.now().isoformat(),
-            "row_count": len(results),
-            "results": results[:3] if results else []  # Solo primeros 3 resultados
+            "results": results[:3] if results else [],  # Solo primeros 3 resultados
+            "timestamp": datetime.now().isoformat(),
+            "row_count": len(results) if results else 0
         }
         
-        # Usar el webhook de feedback
-        feedback_url = "https://sswebhookss.gaussiana.io/webhook/rappi-feedback"
+        # Usar el webhook principal del N8N para feedback
+        feedback_url = "https://jordan-gauss.app.n8n.cloud/webhook/db7b2529-6614-4008-9cee-b01d1d0e5b92"
         response = requests.post(
             feedback_url,
             json=payload,
@@ -266,7 +48,10 @@ def send_feedback(question, sql_query, feedback_score, user_id, results):
         )
         
         if response.status_code == 200:
-            return response.json()
+            return {
+                "success": True,
+                "message": "Feedback enviado correctamente"
+            }
         else:
             return {
                 "success": False,
@@ -280,7 +65,9 @@ def send_feedback(question, sql_query, feedback_score, user_id, results):
         }
 
 # Webhook URL
-WEBHOOK_URL = "https://sswebhookss.gaussiana.io/webhook/604b1f14-eacb-4f33-91c7-60a914831b3c"
+WEBHOOK_URL = "https://jordan-gauss.app.n8n.cloud/webhook/604b1f14-eacb-4f33-91c7-60a914831b3c"
+
+#"https://jordan-gauss.app.n8n.cloud/webhook/604b1f14-eacb-4f33-91c7-60a914831b3c"
 #"https://sswebhookss.gaussiana.io/webhook/rappi-analytics"
 
 # Initialize session state
@@ -328,20 +115,23 @@ for message in st.session_state.messages:
                 with col1:
                     st.metric("📊 Score General", f"{bv.get('overall_score', 0):.1f}/10")
                 with col2:
-                    time_saved = bv.get('time_saved_minutes', 'N/A')
-                    st.metric("⏱️ Tiempo Ahorrado", f"{time_saved} min" if time_saved != 'N/A' else 'N/A')
+                    st.metric("🎯 Valor Estratégico", f"{bv.get('strategic_value', 0):.1f}/10")
                 with col3:
-                    st.metric("🔄 Iteraciones", bv.get('improvement_iterations', 0))
+                    st.metric("✅ Correctitud", f"{bv.get('query_correctness', 0):.1f}/10")
 
-                # Only show details if there are criteria scores
-                if bv.get('criteria_scores') and len(bv['criteria_scores']) > 0:
-                    with st.expander("📈 Detalles de evaluación"):
-                        if 'business_impact' in bv:
-                            st.write(f"**Impacto:** {bv['business_impact']}")
-                        st.write("**Scores por criterio:**")
-                        scores = bv['criteria_scores']
-                        for key, value in scores.items():
-                            st.progress(value / 10, text=f"{key.replace('_', ' ').title()}: {value}/10")
+                # Show details
+                with st.expander("📈 Detalles de evaluación"):
+                    if 'feedback' in bv:
+                        st.write(f"**Feedback:** {bv['feedback']}")
+                    st.write("**Scores por criterio:**")
+                    
+                    # Mostrar scores individuales
+                    if 'strategic_value' in bv:
+                        st.progress(bv['strategic_value'] / 10, text=f"Valor Estratégico: {bv['strategic_value']}/10")
+                    if 'query_correctness' in bv:
+                        st.progress(bv['query_correctness'] / 10, text=f"Correctitud de Query: {bv['query_correctness']}/10")
+                    if 'efficiency_gain' in bv:
+                        st.progress(bv['efficiency_gain'] / 10, text=f"Ganancia de Eficiencia: {bv['efficiency_gain']}/10")
 
             # Show SQL Query
             if "sql_query" in data:
@@ -357,40 +147,6 @@ for message in st.session_state.messages:
                     df = pd.DataFrame(data_rows)
                     st.dataframe(df, width='stretch')
 
-            # Show Visualization (only if it exists and was successful)
-            if "visualization" in data and data["visualization"]:
-                viz = data["visualization"]
-                if viz.get("success") and viz.get("chart_json"):
-                    try:
-                        # Preprocesar los datos antes de renderizar
-                        processed_chart = preprocess_chart_data(viz)
-                        
-                        if processed_chart:
-                            st.markdown("### 📊 Visualización")
-                            fig = go.Figure(processed_chart)
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            # Mostrar tabla de datos extraída del gráfico
-                            extracted_df = extract_data_table_from_chart(viz)
-                            if extracted_df is not None and not extracted_df.empty:
-                                with st.expander("📋 Ver datos de la visualización"):
-                                    # Seleccionar columnas relevantes
-                                    display_cols = [col for col in extracted_df.columns if col in 
-                                                  ["País", "Ciudad", "Zona", "Lead Penetration (%)", "Perfect Order (%)"]]
-                                    if display_cols:
-                                        st.dataframe(extracted_df[display_cols], use_container_width=True)
-                            
-                            # Mostrar estadísticas del gráfico
-                            if viz.get("data_points"):
-                                st.caption(f"📊 {viz.get('data_points', 0)} zonas analizadas")
-                        else:
-                            st.warning("⚠️ No se pudo procesar la visualización")
-                            
-                    except Exception as e:
-                        st.warning(f"⚠️ Error al renderizar gráfica: {str(e)}")
-                        # Show the raw chart_json for debugging
-                        with st.expander("🔍 Debug: Ver JSON de gráfica"):
-                            st.json(viz.get("chart_json"))
             
             # Feedback Component
             if "data" in message and "sql_query" in message["data"]:
@@ -399,35 +155,33 @@ for message in st.session_state.messages:
                 
                 with col1:
                     st.markdown("**¿Te fue útil esta respuesta?**")
-                    feedback_score = st.radio(
-                        "Califica:",
-                        options=[1, 2, 3, 4, 5],
-                        format_func=lambda x: "⭐" * x,
+                    message_index = st.session_state.messages.index(message)
+                    feedback_choice = st.radio(
+                        "Feedback:",
+                        options=["positivo", "negativo"],
+                        format_func=lambda x: "👍 Positivo" if x == "positivo" else "👎 Negativo",
                         horizontal=True,
-                        key=f"feedback_score_{len(st.session_state.messages)}",
+                        key=f"feedback_choice_msg_{message_index}",
                         label_visibility="collapsed"
                     )
                 
                 with col2:
-                    if st.button("👍 Enviar", key=f"submit_feedback_{len(st.session_state.messages)}", type="secondary"):
+                    if st.button("📤 Enviar", key=f"submit_feedback_msg_{message_index}", type="secondary"):
                         result = send_feedback(
+                            feedback_text=feedback_choice,
+                            user_id=st.session_state.user_id,
                             question=message["content"],
                             sql_query=message["data"]["sql_query"],
-                            feedback_score=feedback_score,
-                            user_id=st.session_state.user_id,
                             results=message["data"].get("results", [])
                         )
                         
                         if result.get("success"):
-                            if result.get("stored_in_vector_db"):
-                                st.success("✅ Guardado para aprendizaje!")
-                            else:
-                                st.success("✅ Gracias!")
+                            st.success("✅ ¡Gracias por tu feedback!")
                         else:
                             st.error(f"❌ Error: {result.get('error', 'Unknown error')}")
                 
                 with col3:
-                    if feedback_score >= 4:
+                    if feedback_choice == "positivo":
                         st.caption("💾 Se guardará")
 
 # Chat input
@@ -480,20 +234,23 @@ if prompt := st.chat_input("Escribe tu pregunta sobre las métricas de Rappi..."
                             with col1:
                                 st.metric("📊 Score General", f"{bv.get('overall_score', 0):.1f}/10")
                             with col2:
-                                time_saved = bv.get('time_saved_minutes', 'N/A')
-                                st.metric("⏱️ Tiempo Ahorrado", f"{time_saved} min" if time_saved != 'N/A' else 'N/A')
+                                st.metric("🎯 Valor Estratégico", f"{bv.get('strategic_value', 0):.1f}/10")
                             with col3:
-                                st.metric("🔄 Iteraciones", bv.get('improvement_iterations', 0))
+                                st.metric("✅ Correctitud", f"{bv.get('query_correctness', 0):.1f}/10")
 
-                            # Only show details if there are criteria scores
-                            if bv.get('criteria_scores') and len(bv['criteria_scores']) > 0:
-                                with st.expander("📈 Detalles de evaluación"):
-                                    if 'business_impact' in bv:
-                                        st.write(f"**Impacto:** {bv['business_impact']}")
-                                    st.write("**Scores por criterio:**")
-                                    scores = bv['criteria_scores']
-                                    for key, value in scores.items():
-                                        st.progress(value / 10, text=f"{key.replace('_', ' ').title()}: {value}/10")
+                            # Show details
+                            with st.expander("📈 Detalles de evaluación"):
+                                if 'feedback' in bv:
+                                    st.write(f"**Feedback:** {bv['feedback']}")
+                                st.write("**Scores por criterio:**")
+                                
+                                # Mostrar scores individuales
+                                if 'strategic_value' in bv:
+                                    st.progress(bv['strategic_value'] / 10, text=f"Valor Estratégico: {bv['strategic_value']}/10")
+                                if 'query_correctness' in bv:
+                                    st.progress(bv['query_correctness'] / 10, text=f"Correctitud de Query: {bv['query_correctness']}/10")
+                                if 'efficiency_gain' in bv:
+                                    st.progress(bv['efficiency_gain'] / 10, text=f"Ganancia de Eficiencia: {bv['efficiency_gain']}/10")
 
                         # Show SQL Query
                         if "sql_query" in result:
@@ -509,40 +266,6 @@ if prompt := st.chat_input("Escribe tu pregunta sobre las métricas de Rappi..."
                                 df = pd.DataFrame(data_rows)
                                 st.dataframe(df, width='stretch')
 
-                        # Show Visualization (only if it exists and was successful)
-                        if "visualization" in result and result["visualization"]:
-                            viz = result["visualization"]
-                            if viz.get("success") and viz.get("chart_json"):
-                                try:
-                                    # Preprocesar los datos antes de renderizar
-                                    processed_chart = preprocess_chart_data(viz)
-                                    
-                                    if processed_chart:
-                                        st.markdown("### 📊 Visualización")
-                                        fig = go.Figure(processed_chart)
-                                        st.plotly_chart(fig, use_container_width=True)
-                                        
-                                        # Mostrar tabla de datos extraída del gráfico
-                                        extracted_df = extract_data_table_from_chart(viz)
-                                        if extracted_df is not None and not extracted_df.empty:
-                                            with st.expander("📋 Ver datos de la visualización"):
-                                                # Seleccionar columnas relevantes
-                                                display_cols = [col for col in extracted_df.columns if col in 
-                                                              ["País", "Ciudad", "Zona", "Lead Penetration (%)", "Perfect Order (%)"]]
-                                                if display_cols:
-                                                    st.dataframe(extracted_df[display_cols], use_container_width=True)
-                                        
-                                        # Mostrar estadísticas del gráfico
-                                        if viz.get("data_points"):
-                                            st.caption(f"📊 {viz.get('data_points', 0)} zonas analizadas")
-                                    else:
-                                        st.warning("⚠️ No se pudo procesar la visualización")
-                                        
-                                except Exception as e:
-                                    st.warning(f"⚠️ Error al renderizar gráfica: {str(e)}")
-                                    # Show the raw chart_json for debugging
-                                    with st.expander("🔍 Debug: Ver JSON de gráfica"):
-                                        st.json(viz.get("chart_json"))
                         
                         # Feedback Component
                         st.markdown("---")
@@ -550,35 +273,32 @@ if prompt := st.chat_input("Escribe tu pregunta sobre las métricas de Rappi..."
                         
                         with col1:
                             st.markdown("**¿Te fue útil esta respuesta?**")
-                            feedback_score = st.radio(
-                                "Califica:",
-                                options=[1, 2, 3, 4, 5],
-                                format_func=lambda x: "⭐" * x,
+                            feedback_choice = st.radio(
+                                "Feedback:",
+                                options=["positivo", "negativo"],
+                                format_func=lambda x: "👍 Positivo" if x == "positivo" else "👎 Negativo",
                                 horizontal=True,
-                                key=f"feedback_score_new",
+                                key=f"feedback_choice_new_{len(st.session_state.messages)}",
                                 label_visibility="collapsed"
                             )
                         
                         with col2:
-                            if st.button("👍 Enviar", key=f"submit_feedback_new", type="secondary"):
+                            if st.button("📤 Enviar", key=f"submit_feedback_new_{len(st.session_state.messages)}", type="secondary"):
                                 result_feedback = send_feedback(
+                                    feedback_text=feedback_choice,
+                                    user_id=st.session_state.user_id,
                                     question=prompt,
                                     sql_query=result["sql_query"],
-                                    feedback_score=feedback_score,
-                                    user_id=st.session_state.user_id,
                                     results=result.get("results", [])
                                 )
                                 
                                 if result_feedback.get("success"):
-                                    if result_feedback.get("stored_in_vector_db"):
-                                        st.success("✅ Guardado para aprendizaje!")
-                                    else:
-                                        st.success("✅ Gracias!")
+                                    st.success("✅ ¡Gracias por tu feedback!")
                                 else:
                                     st.error(f"❌ Error: {result_feedback.get('error', 'Unknown error')}")
                         
                         with col3:
-                            if feedback_score >= 4:
+                            if feedback_choice == "positivo":
                                 st.caption("💾 Se guardará")
 
                     else:

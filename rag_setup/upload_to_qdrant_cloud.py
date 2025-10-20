@@ -227,6 +227,108 @@ def upload_contexts():
     print(f"Collection Name: {COLLECTION_NAME}")
 
 
+def upload_content_only():
+    """
+    Sube SOLO el contenido a Qdrant Cloud.
+    Payload mínimo: solo el texto completo en el campo 'content'.
+    REEMPLAZA todos los datos anteriores.
+    """
+    print("\n" + "=" * 70)
+    print("Uploading Business Context - CONTENT ONLY FORMAT")
+    print("=" * 70)
+
+    # Recrear colección (borra datos anteriores)
+    try:
+        print(f"🗑️  Deleting existing collection '{COLLECTION_NAME}'...")
+        qdrant_client.delete_collection(collection_name=COLLECTION_NAME)
+        print(f"✅ Collection deleted")
+    except:
+        print(f"ℹ️  Collection doesn't exist yet")
+
+    print(f"📦 Creating fresh collection '{COLLECTION_NAME}'...")
+    qdrant_client.create_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
+    )
+    print(f"✅ Collection created")
+
+    # Subir cada contexto con payload mínimo
+    points = []
+    for idx, context in enumerate(business_contexts):
+        try:
+            # TODO en un solo texto
+            full_content = f"""Título: {context['title']}
+Categoría: {context['category']}
+
+Definición:
+{context['content']}"""
+
+            # Generar embedding
+            embedding = create_embedding(full_content)
+
+            # Payload MÍNIMO - solo el contenido
+            point = PointStruct(
+                id=str(uuid.uuid4()),
+                vector=embedding,
+                payload={
+                    "content": full_content  # SOLO esto
+                }
+            )
+            points.append(point)
+
+            print(f"✅ [{idx+1}/{len(business_contexts)}] Prepared: {context['title']}")
+
+        except Exception as e:
+            print(f"❌ Error preparing {context['title']}: {e}")
+
+    # Subir
+    if points:
+        try:
+            print(f"\n📤 Uploading {len(points)} points...")
+            qdrant_client.upsert(
+                collection_name=COLLECTION_NAME,
+                points=points
+            )
+            print(f"✅ Successfully uploaded {len(points)} contexts")
+        except Exception as e:
+            print(f"❌ Error uploading: {e}")
+
+    # Verificar
+    print("\n[Verification]")
+    try:
+        collection_info = qdrant_client.get_collection(collection_name=COLLECTION_NAME)
+        print(f"✅ Collection: {COLLECTION_NAME}")
+        print(f"   Total points: {collection_info.points_count}")
+
+        # Test
+        print("\n[Test Search] Searching for 'Perfect Orders'...")
+        test_embedding = create_embedding("Perfect Orders")
+        results = qdrant_client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=test_embedding,
+            limit=3
+        )
+
+        if results:
+            print(f"✅ Found {len(results)} results:")
+            for i, result in enumerate(results):
+                content = result.payload.get('content', '')
+                print(f"\n   {i+1}. Score: {result.score:.3f}")
+                print(f"   {content[:150]}...")
+        else:
+            print("⚠️  No results found")
+
+    except Exception as e:
+        print(f"❌ Verification error: {e}")
+
+    print("\n" + "=" * 70)
+    print("Upload complete!")
+    print("=" * 70)
+    print(f"\nCollection: {COLLECTION_NAME}")
+    print(f"Format: payload = {{ 'content': 'texto completo' }}")
+    print(f"Total points: {len(points)}")
+
+
 def main():
     """Main function"""
     global openai_client, qdrant_client
@@ -275,7 +377,8 @@ def main():
         print(f"❌ Error initializing clients: {e}")
         return
 
-    upload_contexts()
+    # Llamar a la función de solo contenido
+    upload_content_only()
 
 
 if __name__ == "__main__":
