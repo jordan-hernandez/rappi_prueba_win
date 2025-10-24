@@ -1,0 +1,646 @@
+{
+    "nodes": [
+      {
+        "parameters": {
+          "promptType": "define",
+          "text": "={{ $json.body.chatInput }}",
+          "hasOutputParser": true,
+          "options": {
+            "systemMessage": "=You are an expert SQL analyst for Rappi's analytics database with access to business context and query validation tools.\n**YOUR TOOLS:**\n1. **Vector Store Search**: Use this FIRST to find business context, metric definitions, and examples for the metrics mentioned in the question.\n2. **SQL Executor**: You can test queries before returning them (optional for validation).\n**WORKFLOW:**\n1. First, search the vector store for business context about the metrics/KPIs mentioned\n2. Generate SQL query based on schema and context found\n3. Return the final SQL query\n**DATABASE SCHEMA:**\nTable: metrics_input (ALL business metrics)\n- country (text): MX, CO, BR, CL, AR, PE, EC, CR, UY\n- city (text)\n- zone (text)\n- zone_type (text)\n- metric (text): MUST filter by exact metric name\n- l0w_value (numeric): Current week\n- l1w_value...l8w_value (numeric): Historical weeks\nAvailable metrics: Perfect Orders, Lead Penetration, Gross Profit UE, Pro Adoption, and 9 more.\nTable: orders (Order counts ONLY)\n- country, city, zone\n- l0w, l1w...l8w (integer): Order counts per week\n**IMPORTANT RULES:**\n1. ALL metrics are in metrics_input table\n2. Always filter: WHERE metric = 'Exact Metric Name'\n3. Use aggregations (AVG, MIN, MAX, COUNT) when grouping\n4. For comparisons, use GROUP BY country/zone\n5. For trends, select l0w_value, l1w_value, l2w_value, etc.\n6. Check NULL values with IS NOT NULL\n**YOUR TASK:**\nGenerate a PostgreSQL query to answer the user's question.\nReturn ONLY the SQL query, no explanations."
+          }
+        },
+        "type": "@n8n/n8n-nodes-langchain.agent",
+        "typeVersion": 2.2,
+        "position": [
+          -1248,
+          0
+        ],
+        "id": "049aab65-3c12-4fa5-aa4c-a85ddab034b6",
+        "name": "AI Agent - SQL Generator"
+      },
+      {
+        "parameters": {
+          "model": {
+            "__rl": true,
+            "value": "gpt-4.1-mini",
+            "mode": "list",
+            "cachedResultName": "gpt-4.1-mini"
+          },
+          "options": {
+            "maxTokens": 500,
+            "temperature": 0.1
+          }
+        },
+        "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+        "typeVersion": 1.2,
+        "position": [
+          -1360,
+          368
+        ],
+        "id": "6c626d99-7914-4c47-871f-9563e2f5b98a",
+        "name": "OpenAI Model (Generator)",
+        "credentials": {
+          "openAiApi": {
+            "id": "KRWOJCFD6QiVhwtb",
+            "name": "OpenAi account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "sessionIdType": "customKey",
+          "sessionKey": "={{ $json.body.sessionId }}",
+          "contextWindowLength": 10
+        },
+        "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+        "typeVersion": 1.3,
+        "position": [
+          -1200,
+          336
+        ],
+        "id": "4cdeecf3-b6a3-4b14-adb4-aa9d23537aaf",
+        "name": "Postgres Chat Memory",
+        "credentials": {
+          "postgres": {
+            "id": "pLaYKMLWUr8cMIvc",
+            "name": "Postgres account 2"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// Extract SQL from agent response\nconst agentOutput = $input.first().json.output;\n\n// Try to extract SQL from markdown code blocks\nlet sql = agentOutput;\n\nconst sqlBlockMatch = agentOutput.match(/```sql\\n([\\s\\S]*?)```/i);\nif (sqlBlockMatch) {\n  sql = sqlBlockMatch[1].trim();\n} else {\n  const codeBlockMatch = agentOutput.match(/```([\\s\\S]*?)```/);\n  if (codeBlockMatch) {\n    sql = codeBlockMatch[1].trim();\n  }\n}\n\n// Remove common prefixes\nsql = sql.replace(/^(SQL:|Query:)\\s*/i, '').trim();\n\nreturn {\n  json: {\n    question:$('Webhook').first().json.body.chatInput,\n    sql_query: sql,\n    user_id:$('Webhook').first().json.body.sessionId,\n    user_context:$('Webhook').first().json.body.chatInput\n  }\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          -768,
+          0
+        ],
+        "id": "260af4dc-0e45-4bed-813f-edde30df0bb7",
+        "name": "Extract SQL from Agent"
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "={{ $json.sql_query }}   ",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.postgres",
+        "typeVersion": 2.4,
+        "position": [
+          -560,
+          0
+        ],
+        "id": "3815f800-7461-4639-b197-ba9c3075b798",
+        "name": "Execute SQL Query",
+        "credentials": {
+          "postgres": {
+            "id": "pLaYKMLWUr8cMIvc",
+            "name": "Postgres account 2"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "promptType": "define",
+          "text": "=You are a senior business analyst at Rappi, evaluating analytical queries for our Growth teams. Your goal is to ensure the generated queries are valuable, correct, and efficient.\n\n**Question:** {{ $('Extract SQL from Agent').item.json.question }}\n**SQL Query:**\nsql\n{{ $('Extract SQL from Agent').item.json.sql_query }}\n\n**Sample Data (first 3 rows):**\n{{ JSON.stringify($json.slice(0, 3), null, 2) }}\n\n**Evaluate the query based on 3 core pillars (0-10 scale). Be concise and fast.**\n\n1.  **STRATEGIC_VALUE**: How relevant and actionable is this for a Growth Manager? Does it answer a key business question that leads to decisions? (Combines relevance, actionability, and adoption potential).\n2.  **QUERY_CORRECTNESS**: Based on the question and sample data, does the SQL query seem logically sound and correctly structured to answer the question?\n3.  **EFFICIENCY_GAIN**: How much effort does this query save compared to a manual, non-automated analysis?\n\n**Return JSON ONLY with no explanations before or after:**\n{\n  \"strategic_value\": <score 0-10>,\n  \"query_correctness\": <score 0-10>,\n  \"efficiency_gain\": <score 0-10>,\n  \"overall_score\": <average of the 3 scores>,\n  \"should_reject\": <true if overall_score < 6.5 or query_correctness < 5>,\n  \"feedback\": \"<Consolidated feedback. If good, briefly explain the business impact. If needs improvement, provide a clear reason and a suggestion.>\"\n}\nIMPORTANTE: MAXIMO 3 ITERACIONES, NO PASARSE DE AHÍ ",
+          "hasOutputParser": true,
+          "options": {
+            "systemMessage": "You are a business analyst evaluating the quality of data queries. Be strict but fair. Return ONLY valid JSON."
+          }
+        },
+        "type": "@n8n/n8n-nodes-langchain.agent",
+        "typeVersion": 2.2,
+        "position": [
+          -352,
+          0
+        ],
+        "id": "af2752b0-717d-46bb-ac6b-84fcaee223f5",
+        "name": "Evaluator Agent",
+        "executeOnce": true
+      },
+      {
+        "parameters": {
+          "model": {
+            "__rl": true,
+            "value": "gpt-4.1-mini",
+            "mode": "list",
+            "cachedResultName": "gpt-4.1-mini"
+          },
+          "options": {
+            "maxTokens": 800,
+            "temperature": 0.2,
+            "maxRetries": 3
+          }
+        },
+        "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+        "typeVersion": 1.2,
+        "position": [
+          -416,
+          288
+        ],
+        "id": "9591dc98-1d03-4d01-8b5f-1d8cc6085292",
+        "name": "OpenAI Model (Evaluator)",
+        "credentials": {
+          "openAiApi": {
+            "id": "KRWOJCFD6QiVhwtb",
+            "name": "OpenAi account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// Parse evaluation result\nconst evalOutput = $input.item.json.output;\n\nlet evaluation;\ntry {\n  // Try to extract JSON from markdown\n  const jsonMatch = evalOutput.match(/```json\\n([\\s\\S]*?)```/);\n  if (jsonMatch) {\n    evaluation = JSON.parse(jsonMatch[1]);\n  } else if (evalOutput.match(/^\\s*\\{/)) {\n    evaluation = JSON.parse(evalOutput);\n  } else {\n    throw new Error('No valid JSON found');\n  }\n} catch (e) {\n  // Fallback: create default evaluation\n  evaluation = {\n    business_relevance: 7.0,\n    data_accuracy: 7.0,\n    actionability: 7.0,\n    adoption_potential: 7.0,\n    time_savings: 7.0,\n    overall_score: 7.0,\n    should_reject: false,\n    feedback_reason: 'Evaluation parsing failed, using default scores',\n    improvement_suggestions: 'N/A',\n    business_impact: 'Query executed successfully',\n    estimated_time_saved_minutes: 20\n  };\n}\n\nreturn {\n  json: {\n    question: $('Extract SQL from Agent').item.json.question,\n    sql_query: $('Extract SQL from Agent').item.json.sql_query,\n    results: $('Execute SQL Query').all(),\n    evaluation: evaluation,\n    user_id: $('Extract SQL from Agent').item.json.user_id\n  }\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          -224,
+          192
+        ],
+        "id": "17fe787e-c635-4edb-a8b2-9d3fdef22020",
+        "name": "Parse Evaluation Result",
+        "executeOnce": false
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{ $json.evaluation.should_reject }}",
+                "value2": true
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          -32,
+          192
+        ],
+        "id": "6b7f3731-5706-4454-a7ef-41959e9845cd",
+        "name": "Should Reject?"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Count iterations\nconst currentIteration = $('When chat message received').first().json.iteration || 0;\n\nif (currentIteration >= 3) {\n  // Max iterations reached, accept anyway\n  return {\n    json: {\n      ...$input.item.json,\n      evaluation: {\n        ...$input.item.json.evaluation,\n        should_reject: false,\n        feedback_reason: 'Max iterations reached (3), accepting query'\n      }\n    }\n  };\n}\n\n// Prepare for regeneration with feedback\nconst improvementPrompt = `Previous attempt failed. \n\nOriginal Question: ${$input.item.json.question}\n\nPrevious SQL: ${$input.item.json.sql_query}\n\nFeedback: ${$input.item.json.evaluation.feedback_reason}\n\nSuggestions: ${$input.item.json.evaluation.improvement_suggestions}\n\nPlease generate an IMPROVED SQL query that addresses these issues.`;\n\nreturn {\n  json: {\n    chatInput: improvementPrompt,\n    sessionId: $input.item.json.user_id,\n    iteration: currentIteration + 1\n  }\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          176,
+          80
+        ],
+        "id": "b6118df7-b829-4b6f-ac20-7d12ff51e70b",
+        "name": "Prepare Regeneration with Feedback"
+      },
+      {
+        "parameters": {
+          "promptType": "define",
+          "text": "=Based on the query results, provide a clear, business-focused answer.\n\n**Question:** {{ $json.question }}\n\n**SQL Query:**\n```sql\n{{ $json.sql_query }}\n```\n\n**Results ({{ $json.results.length }} rows):**\n{{ JSON.stringify($json.results.slice(0, 10), null, 2) }}\n\n**Business Value Scores:**\n- Overall: {{ $json.evaluation.overall_score }}/10\n- Business Impact: {{ $json.evaluation.business_impact }}\n- Time Saved: ~{{ $json.evaluation.estimated_time_saved_minutes }} minutes\n\nProvide a 2-4 sentence answer that:\n1. Directly answers the question\n2. Highlights key numbers and insights\n3. Mentions business implications\n4. Uses non-technical language",
+          "options": {
+            "systemMessage": "You are a business analyst explaining data insights to executives. Be concise, clear, and actionable."
+          }
+        },
+        "type": "@n8n/n8n-nodes-langchain.agent",
+        "typeVersion": 2.2,
+        "position": [
+          144,
+          288
+        ],
+        "id": "ed9ee288-6db4-4f8a-b47d-a86becbac251",
+        "name": "Answer Generator Agent"
+      },
+      {
+        "parameters": {
+          "model": {
+            "__rl": true,
+            "value": "gpt-4.1-mini",
+            "mode": "list",
+            "cachedResultName": "gpt-4.1-mini"
+          },
+          "options": {
+            "maxTokens": 400,
+            "temperature": 0.3
+          }
+        },
+        "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+        "typeVersion": 1.2,
+        "position": [
+          32,
+          592
+        ],
+        "id": "701bd920-b77a-4cc9-8e48-9a156400bd90",
+        "name": "OpenAI Model (Answer)",
+        "credentials": {
+          "openAiApi": {
+            "id": "KRWOJCFD6QiVhwtb",
+            "name": "OpenAi account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// Determine chart type based on data\nconst results = $('Parse Evaluation Result').item.json.results;\nconst question = $('Parse Evaluation Result').item.json.question.toLowerCase();\n\nif (results.length < 2) {\n  return {\n    json: {\n      should_visualize: false,\n      reason: 'Not enough data points'\n    }\n  };\n}\n\nlet chartType = 'bar'; // default\n\n// Detect chart type from question\nif (question.includes('trend') || question.includes('evoluci') || question.includes('ultimas') || question.includes('semanas')) {\n  chartType = 'line';\n} else if (question.includes('compar') || question.includes('top') || question.includes('ranking')) {\n  chartType = 'bar';\n} else if (question.includes('distribuci') || question.includes('proporci')) {\n  chartType = 'pie';\n}\n\n// Detect columns\nconst firstRow = results[0];\nconst columns = Object.keys(firstRow);\n\nconst numericCols = columns.filter(col => typeof firstRow[col] === 'number');\nconst categoricalCols = columns.filter(col => typeof firstRow[col] === 'string');\n\nconst xColumn = categoricalCols[0] || columns[0];\nconst yColumn = numericCols[0] || columns[1];\n\nreturn {\n  json: {\n    should_visualize: true,\n    chart_type: chartType,\n    x_column: xColumn,\n    y_column: yColumn,\n    data: results.slice(0, 20), // Limit to 20 points\n    title: $('Parse Evaluation Result').item.json.question.substring(0, 60)\n  }\n};"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          432,
+          80
+        ],
+        "id": "1f477ca8-3eb7-453f-a4a9-8794e3d241a5",
+        "name": "Detect Visualization Needs"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{ $json.should_visualize }}",
+                "value2": true
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          640,
+          224
+        ],
+        "id": "f8e35298-2cc2-4c02-a156-6e63d77ab19a",
+        "name": "Should Visualize?"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Compile final response\nconst evaluation = $('Parse Evaluation Result').item.json.evaluation;\nconst answer = $('Answer Generator Agent').item.json.output;\nconst vizData = $('Detect Visualization Needs').item.json;\n\n// Obtener datos del gráfico si existe (nota: ahora es \"Generate Plotly Chart1\")\nlet chartData = null;\nif (vizData.should_visualize) {\n  try {\n    // Intenta obtener datos del nodo del gráfico\n    const chartNodes = $('Generate Plotly Chart1').all();\n    if (chartNodes && chartNodes.length > 0) {\n      chartData = chartNodes[0].json;\n    }\n  } catch(e) {\n    console.log('No chart data available:', e.message);\n  }\n}\n\n// Determinar emoji basado en el score\nconst emoji = evaluation.overall_score >= 8 ? '🌟' : \n              evaluation.overall_score >= 6 ? '✅' : '⚠️';\n\n// Construir respuesta final\nconst response = {\n  success: true,\n  question: $('Parse Evaluation Result').item.json.question,\n  sql_query: $('Parse Evaluation Result').item.json.sql_query,\n  results: $('Parse Evaluation Result').item.json.results,\n  row_count: $('Parse Evaluation Result').item.json.results.length,\n  answer: answer,\n  business_value: {\n    overall_score: evaluation.overall_score,\n    criteria_scores: {\n      business_relevance: evaluation.business_relevance,\n      data_accuracy: evaluation.data_accuracy,\n      actionability: evaluation.actionability,\n      adoption_potential: evaluation.adoption_potential,\n      time_savings: evaluation.time_savings\n    },\n    business_impact: evaluation.business_impact,\n    time_saved_minutes: evaluation.estimated_time_saved_minutes,\n    improvement_iterations: 0  // Se actualizará si implementas iteraciones\n  },\n  visualization: null,  // Inicializar como null\n  formatted_response: ''  // Se construye al final\n};\n\n// Agregar visualización si existe\nif (vizData.should_visualize && chartData && chartData.success) {\n  response.visualization = {\n    success: true,\n    chart_type: vizData.chart_type,\n    chart_json: chartData.chart_json,\n    chart_html: chartData.html,\n    embed_html: chartData.embed_html,\n    statistics: chartData.statistics,\n    data_points: vizData.data.length\n  };\n}\n\n// Construir respuesta formateada\nlet formattedResponse = `${emoji} **Rappi Analytics**\\n\\n`;\nformattedResponse += `${answer}\\n\\n`;\nformattedResponse += `💡 **Impacto:** ${evaluation.business_impact}\\n`;\nformattedResponse += `📊 **Score:** ${evaluation.overall_score.toFixed(1)}/10\\n`;\nformattedResponse += `⏱️ **Tiempo ahorrado:** ~${evaluation.estimated_time_saved_minutes} min`;\n\nif (response.visualization) {\n  formattedResponse += `\\n📈 **Visualización:** Gráfico ${vizData.chart_type} con ${vizData.data.length} puntos de datos`;\n}\n\nresponse.formatted_response = formattedResponse;\n\n// Para chat response, incluir versión simplificada\nresponse.chat_response = {\n  text: formattedResponse,\n  visualization_available: response.visualization !== null,\n  score: evaluation.overall_score,\n  success: true\n};\n\nreturn { json: response };"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          976,
+          240
+        ],
+        "id": "696f7dfe-6d17-43ef-8dfd-f0dad8f2ad8f",
+        "name": "Compile Final Response"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify($json) }}\n",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1,
+        "position": [
+          1264,
+          240
+        ],
+        "id": "fd8d7a3d-ebaa-44c7-b60a-eaeba7927b84",
+        "name": "Respond to Webhook"
+      },
+      {
+        "parameters": {
+          "mode": "retrieve-as-tool",
+          "toolDescription": "use this tool to find metrics of business",
+          "qdrantCollection": {
+            "__rl": true,
+            "value": "rappi_business_context",
+            "mode": "list",
+            "cachedResultName": "rappi_business_context"
+          },
+          "topK": 5,
+          "options": {}
+        },
+        "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+        "typeVersion": 1.3,
+        "position": [
+          -1040,
+          336
+        ],
+        "id": "15efaadf-ade6-4113-81cd-992473e27e09",
+        "name": "Qdrant Vector Store1",
+        "credentials": {
+          "qdrantApi": {
+            "id": "5zTUNjfdAM6DBjL0",
+            "name": "QdrantApi account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "options": {}
+        },
+        "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+        "typeVersion": 1.2,
+        "position": [
+          -960,
+          512
+        ],
+        "id": "0f2b95bd-ddb5-47db-93ad-2938d3c9db48",
+        "name": "Embeddings OpenAI1",
+        "credentials": {
+          "openAiApi": {
+            "id": "KRWOJCFD6QiVhwtb",
+            "name": "OpenAi account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// Datos y configuración básica\nconst data = $json.data;\nconst chartType = $json.chart_type;\nconst title = $json.title;\nconst xColumn = $json.x_column;\nconst yColumn = $json.y_column;\n\n// Preparar arrays para los ejes\nconst xValues = data.map(row => row[xColumn]);\nconst yValues = data.map(row => row[yColumn]);\n\n// Construir la serie de datos para Plotly según el tipo de gráfico\nlet plotlyData;\nif (chartType === 'line') {\n  plotlyData = [{\n    x: xValues,\n    y: yValues,\n    type: 'scatter',\n    mode: 'lines+markers',\n    marker: { color: '#FF6B35', size: 8 },\n    line: { color: '#FF6B35', width: 2 }\n  }];\n} else if (chartType === 'bar') {\n  plotlyData = [{\n    x: xValues,\n    y: yValues,\n    type: 'bar',\n    marker: {\n      color: '#FF6B35',\n      opacity: 0.8\n    }\n  }];\n} else if (chartType === 'pie') {\n  plotlyData = [{\n    values: yValues,\n    labels: xValues,\n    type: 'pie',\n    marker: {\n      colors: [\n        '#FF6B35', '#F7931E', '#FDB462', '#FB8072',\n        '#80B1D3', '#8DD3C7', '#BEBADA', '#FFFFB3'\n      ]\n    }\n  }];\n}\n\n// Layout para el gráfico\nconst layout = {\n  title: {\n    text: title,\n    font: { size: 18, color: '#333' }\n  },\n  xaxis: {\n    title: xColumn,\n    gridcolor: '#E0E0E0'\n  },\n  yaxis: {\n    title: yColumn,\n    gridcolor: '#E0E0E0'\n  },\n  paper_bgcolor: '#FAFAFA',\n  plot_bgcolor: 'white',\n  margin: { t: 60, r: 30, l: 60, b: 60 },\n  font: { family: 'Arial, sans-serif' },\n  showlegend: (chartType === 'pie'),\n  height: 400,\n  width: 600\n};\n\n// Generar HTML completo del gráfico\nconst chartHtml = `\n<!DOCTYPE html>\n<html>\n<head>\n  <script src=\"https://cdn.plot.ly/plotly-2.27.0.min.js\"></script>\n  <style>\n    body {\n      font-family: Arial, sans-serif;\n      margin: 0;\n      padding: 20px;\n      background: #f5f5f5;\n    }\n    .chart-container {\n      background: white;\n      border-radius: 8px;\n      padding: 20px;\n      box-shadow: 0 2px 4px rgba(0,0,0,0.1);\n    }\n    .chart-stats {\n      margin-top: 15px;\n      padding: 10px;\n      background: #f8f9fa;\n      border-radius: 4px;\n      font-size: 14px;\n    }\n  </style>\n</head>\n<body>\n  <div class=\"chart-container\">\n    <div id=\"plotly-chart\"></div>\n    <div class=\"chart-stats\">\n      <strong>📊 Estadísticas:</strong><br>\n      • Tipo: ${chartType}<br>\n      • Puntos de datos: ${data.length}<br>\n      • Eje X: ${xColumn}<br>\n      • Eje Y: ${yColumn}\n    </div>\n  </div>\n  <script>\n    const data = ${JSON.stringify(plotlyData)};\n    const layout = ${JSON.stringify(layout)};\n    const config = {\n      responsive: true,\n      displayModeBar: true,\n      modeBarButtonsToRemove: ['pan2d', 'lasso2d', 'select2d'],\n      displaylogo: false\n    };\n    Plotly.newPlot('plotly-chart', data, layout, config);\n  </script>\n</body>\n</html>\n`;\n\n// Config para embeber\nconst chartConfig = {\n  data: plotlyData,\n  layout: layout,\n  config: {\n    responsive: true,\n    displayModeBar: true,\n    displaylogo: false\n  }\n};\n\n// Cálculo de estadísticas simples\nconst validY = yValues.filter(v => !isNaN(v));\nconst stats = {\n  min: Math.min(...validY),\n  max: Math.max(...validY),\n  avg: validY.reduce((sum, v) => sum + v, 0) / validY.length,\n  count: data.length\n};\n\nreturn {\n  json: {\n    success: true,\n    chart_type: chartType,\n    chart_json: JSON.stringify(chartConfig),\n    chart_config: chartConfig,\n    html: chartHtml,\n    embed_html: `<div id=\"chart-${Date.now()}\"></div>\n      <script>\n        Plotly.newPlot('chart-${Date.now()}', ${JSON.stringify(plotlyData)}, ${JSON.stringify(layout)});\n      </script>`,\n    statistics: stats,\n    data_summary: {\n      x_values: xValues.slice(0, 5),\n      y_values: yValues.slice(0, 5),\n      total_points: data.length\n    }\n  }\n};\n"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          800,
+          464
+        ],
+        "id": "f8c07336-ad54-4d99-9ad4-62a3df06da0a",
+        "name": "Generate Plotly Chart1"
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "604b1f14-eacb-4f33-91c7-60a914831b3c",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2.1,
+        "position": [
+          -1584,
+          0
+        ],
+        "id": "c2702213-0926-4f96-a747-2d71bbb26c9c",
+        "name": "Webhook",
+        "webhookId": "604b1f14-eacb-4f33-91c7-60a914831b3c"
+      }
+    ],
+    "connections": {
+      "AI Agent - SQL Generator": {
+        "main": [
+          [
+            {
+              "node": "Extract SQL from Agent",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "OpenAI Model (Generator)": {
+        "ai_languageModel": [
+          [
+            {
+              "node": "AI Agent - SQL Generator",
+              "type": "ai_languageModel",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Postgres Chat Memory": {
+        "ai_memory": [
+          [
+            {
+              "node": "AI Agent - SQL Generator",
+              "type": "ai_memory",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Extract SQL from Agent": {
+        "main": [
+          [
+            {
+              "node": "Execute SQL Query",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Execute SQL Query": {
+        "main": [
+          [
+            {
+              "node": "Evaluator Agent",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Evaluator Agent": {
+        "main": [
+          [
+            {
+              "node": "Parse Evaluation Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "OpenAI Model (Evaluator)": {
+        "ai_languageModel": [
+          [
+            {
+              "node": "Evaluator Agent",
+              "type": "ai_languageModel",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse Evaluation Result": {
+        "main": [
+          [
+            {
+              "node": "Should Reject?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Should Reject?": {
+        "main": [
+          [
+            {
+              "node": "Prepare Regeneration with Feedback",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Answer Generator Agent",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Regeneration with Feedback": {
+        "main": [
+          [
+            {
+              "node": "AI Agent - SQL Generator",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Answer Generator Agent": {
+        "main": [
+          [
+            {
+              "node": "Detect Visualization Needs",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "OpenAI Model (Answer)": {
+        "ai_languageModel": [
+          [
+            {
+              "node": "Answer Generator Agent",
+              "type": "ai_languageModel",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Detect Visualization Needs": {
+        "main": [
+          [
+            {
+              "node": "Should Visualize?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Should Visualize?": {
+        "main": [
+          [
+            {
+              "node": "Generate Plotly Chart1",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Compile Final Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Compile Final Response": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Respond to Webhook": {
+        "main": [
+          []
+        ]
+      },
+      "Qdrant Vector Store1": {
+        "ai_tool": [
+          [
+            {
+              "node": "AI Agent - SQL Generator",
+              "type": "ai_tool",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Embeddings OpenAI1": {
+        "ai_embedding": [
+          [
+            {
+              "node": "Qdrant Vector Store1",
+              "type": "ai_embedding",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Generate Plotly Chart1": {
+        "main": [
+          [
+            {
+              "node": "Compile Final Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "AI Agent - SQL Generator",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "pinData": {
+      "Webhook": [
+        {
+          "headers": {
+            "host": "sswebhookss.gaussiana.io",
+            "user-agent": "python-requests/2.32.3",
+            "content-length": "170",
+            "accept": "*/*",
+            "accept-encoding": "gzip, deflate, br, zstd",
+            "content-type": "application/json",
+            "x-forwarded-for": "10.0.0.2",
+            "x-forwarded-host": "sswebhookss.gaussiana.io",
+            "x-forwarded-port": "443",
+            "x-forwarded-proto": "https",
+            "x-forwarded-server": "a941def32b5b",
+            "x-real-ip": "10.0.0.2"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "chatInput": "¿Qué zonas tienen alto Lead Penetration pero bajo Perfect Order?\n\n",
+            "sessionId": "streamlit_user",
+            "user_context": "Streamlit Chat Interface"
+          },
+          "webhookUrl": "https://sswebhookss.gaussiana.io/webhook/604b1f14-eacb-4f33-91c7-60a914831b3c",
+          "executionMode": "production"
+        }
+      ]
+    },
+    "meta": {
+      "templateCredsSetupCompleted": true,
+      "instanceId": "b3ee42a81f79fd7323a1f27fbbd4c44fc97cf7c3110c048a5bec32ac58f11fee"
+    }
+  }
